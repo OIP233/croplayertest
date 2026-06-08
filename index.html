@@ -653,6 +653,26 @@ html, body {
   100% { opacity:1; transform:translateX(0); }
 }
 
+/* Continue puls-glow voor ONbevestigde alarmen — blijft oplichten tot bevestiging.
+   Urgentie-gegradeerd via de animatieduur (rood sneller dan geel). Alleen box-shadow,
+   zodat het in elk thema (donker/licht) werkt. */
+@keyframes alarmPulseHi {
+  0%,100% { box-shadow: 0 0 0 rgba(255,78,64,0); }
+  50%     { box-shadow: 0 0 15px rgba(255,78,64,.65), inset 0 0 8px rgba(255,78,64,.20); }
+}
+@keyframes alarmPulseMed {
+  0%,100% { box-shadow: 0 0 0 rgba(255,176,48,0); }
+  50%     { box-shadow: 0 0 13px rgba(255,176,48,.55), inset 0 0 7px rgba(255,176,48,.16); }
+}
+@keyframes alarmPulseLo {
+  0%,100% { box-shadow: 0 0 0 rgba(255,214,10,0); }
+  50%     { box-shadow: 0 0 12px rgba(255,214,10,.50), inset 0 0 6px rgba(255,214,10,.14); }
+}
+@keyframes alarmPulseSystem {
+  0%,100% { box-shadow: 0 0 0 rgba(0,232,255,0); }
+  50%     { box-shadow: 0 0 13px rgba(0,232,255,.55), inset 0 0 7px rgba(0,232,255,.16); }
+}
+
 /* Chatbericht: inslide + border-glow die uitdooft */
 @keyframes msgEntryAi {
   0%   { opacity:0; transform:translateY(8px);
@@ -901,6 +921,11 @@ html, body {
   color:var(--text-dim);
   animation: alarmEntryInf .4s ease forwards;
 }
+/* Onbevestigde, bevestigbare alarmen: entry-glow + daarna continue puls (oplichten). */
+.alarm-row.hi.ackable:not(.acked)     { animation: alarmEntryHi 2.4s ease forwards,    alarmPulseHi 1.3s ease-in-out 2.4s infinite; }
+.alarm-row.med.ackable:not(.acked)    { animation: alarmEntryMed 2.2s ease forwards,   alarmPulseMed 1.7s ease-in-out 2.2s infinite; }
+.alarm-row.lo.ackable:not(.acked)     { animation: alarmEntryLo 2s ease forwards,      alarmPulseLo 2.3s ease-in-out 2s infinite; }
+.alarm-row.system.ackable:not(.acked) { animation: alarmEntrySystem 2s ease forwards,  alarmPulseSystem 1.9s ease-in-out 2s infinite; }
 .alarm-row b   { display:block; font-weight:600; font-size:13px; color:var(--text-bright); }
 .alarm-row small { font-size: 13px; color:var(--text-dim); }
 .alarm-time { float:right; opacity:.6; font-size: 13px; }
@@ -915,12 +940,20 @@ html, body {
   outline: 1px solid rgba(255,255,255,.15);
 }
 .alarm-row.acked {
-  opacity: .38;
-  filter: grayscale(.7);
-  animation: none !important;
+  opacity: .72;              /* bevestigd blijft duidelijk zichtbaar (was .38) */
+  filter: saturate(.65);    /* kleur behouden i.p.v. grijs, maar wat gedempt */
+  animation: none !important;/* stopt de puls */
   cursor: default;
 }
-.alarm-row.acked b { color: var(--text-dim); }
+.alarm-row.acked b { color: var(--text); }
+
+/* Respecteer systeemvoorkeur voor minder beweging: geen continue puls. */
+@media (prefers-reduced-motion: reduce) {
+  .alarm-row.hi.ackable:not(.acked),
+  .alarm-row.med.ackable:not(.acked),
+  .alarm-row.lo.ackable:not(.acked),
+  .alarm-row.system.ackable:not(.acked) { animation-iteration-count: 1; }
+}
 .ack-badge {
   display: inline-block;
   font-family: var(--mono);
@@ -3817,8 +3850,8 @@ function startBriefingTimer(durationSec) {
   barEl.style.width           = '100%';
   barEl.style.backgroundColor = 'var(--purple, #a78bfa)';
 
-  addAlarm('lo', 'DCS', 'Briefing started', '');
-  addMsg('alarm', null, 'DCS: Briefing started');
+  // Geen 'Briefing started'-melding in de feed: de briefingfase is al zichtbaar
+  // via de fase-timer (briefing-modus). De feed bevat alleen scenario-alarmen.
 
   // Automatische overgang naar fase 1 als de timer afloopt
   const autoTransitionTimeout = setTimeout(() => {
@@ -4697,13 +4730,9 @@ async function initScenario() {
 
   addAlarm('inf', 'SYS', 'Systeem operationeel', '');
 
-  // Briefing aanwezig? Toon alarm + start briefing-timer; fase-timers starten pas na [FASE:1]
+  // Briefing aanwezig? (geen feed-melding; de briefingfase is zichtbaar via de fase-timer)
   const briefingCfg = scenarioConfig?.aiScenario?.briefing;
   const hasBriefing = !!(briefingCfg?.slideUrl?.trim() || briefingCfg?.dir?.trim());
-  if (hasBriefing) {
-    addAlarm('inf', 'BRIEFING',
-      'Pre-scenario briefing active', '');
-  }
 
   const welcomeMsg = participantName
     ? `── Scenario gestart · ${participantName} · ${getSimTimeStr()} ──`
@@ -7453,8 +7482,8 @@ function handlePhaseTransition(phaseNum) {
       btn.classList.toggle('active', i === idx);
     });
     startPhaseTimerDisplay(idx);
-    const label = localizePhaseLabel(phases[idx]?.label) || `Fase ${phaseNum}`;
-    addAlarm('inf', lang==='en'?`PHASE ${phaseNum}`:`FASE ${phaseNum}`, label, '');
+    // Geen fase-melding in de alarm/signaleringen-feed: de actieve fase is al
+    // zichtbaar in de fase-timer linksonder. De feed bevat alleen scenario-alarmen.
     return;
   }
 
@@ -7482,9 +7511,7 @@ function handlePhaseTransition(phaseNum) {
     }
   }
 
-  // Alarm-notitie
-  const label = localizePhaseLabel(phase.label) || `Fase ${phaseNum}`;
-  addAlarm('inf', lang==='en'?`PHASE ${phaseNum}`:`FASE ${phaseNum}`, label, '');
+  // Geen fase-melding in de alarm/signaleringen-feed (alleen de fase-timer toont de fase).
 }
 // ═══════════════════════════════════════════════════════════════
 async function triggerDebriefing() {
