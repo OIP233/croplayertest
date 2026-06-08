@@ -3606,6 +3606,43 @@ The scenario configuration may have been written in a different language — tra
 Role names from the config may appear in the original language; use natural ${langName} equivalents in your responses.`;
 }
 
+// ── Fase-naam lokalisatie ──────────────────────────────────────
+// De scenario-JSON bevat fasenamen in de taal waarin het scenario is opgesteld
+// (vaak Nederlands). De display moet de standaardfasen tonen in de uitvoeringstaal.
+// Bekende standaardfasen worden vertaald; vrij ingevoerde (custom) labels blijven ongewijzigd.
+const PHASE_I18N = {
+  orientation:     { en:'Orientation',   nl:'Oriëntatie',      de:'Orientierung',   es:'Orientación',     fr:'Orientation',      pl:'Orientacja' },
+  'first-signals': { en:'First signals', nl:'Eerste signalen', de:'Erste Signale',  es:'Primeras señales',fr:'Premiers signaux', pl:'Pierwsze sygnały' },
+  escalation:      { en:'Escalation',    nl:'Escalatie',       de:'Eskalation',     es:'Escalada',        fr:'Escalade',         pl:'Eskalacja' },
+  resolution:      { en:'Resolution',    nl:'Afhandeling',     de:'Abschluss',      es:'Resolución',      fr:'Résolution',       pl:'Rozwiązanie' },
+};
+function normPhase(s) {
+  return String(s || '').toLowerCase().trim().replace(/\s+/g, ' ')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '');   // diacriet-ongevoelig (ë, ñ, ł, …)
+}
+// Alle vertalingen (diacriet-ongevoelig) terug naar hun canonieke sleutel.
+const PHASE_ALIAS = (() => {
+  const m = {};
+  for (const key in PHASE_I18N) for (const l in PHASE_I18N[key]) m[normPhase(PHASE_I18N[key][l])] = key;
+  return m;
+})();
+function localizePhaseLabel(label) {
+  const key = PHASE_ALIAS[normPhase(label)];
+  if (!key) return label || '';                 // custom label: ongewijzigd laten
+  // Volgt de UI-taal van de player (standaard Engels), NIET de uitvoeringstaal:
+  // de fasenamen horen in de display-taal te staan, in alle taalversies.
+  const tgt = lang;
+  return PHASE_I18N[key][tgt] || PHASE_I18N[key].en || label;
+}
+function phaseCounterLabel(n, total) {
+  const tgt = lang;
+  const fmt = {
+    en:`Phase ${n} of ${total}`, nl:`Fase ${n} van ${total}`, de:`Phase ${n} von ${total}`,
+    es:`Fase ${n} de ${total}`,  fr:`Phase ${n} sur ${total}`, pl:`Faza ${n} z ${total}`,
+  };
+  return fmt[tgt] || fmt.en;
+}
+
 // Callback bij handmatige wijziging van de uitvoeringstaal-dropdown
 function onExecLangChange() {
   const sel = document.getElementById('execlang-select');
@@ -3881,8 +3918,8 @@ function startPhaseTimerDisplay(phaseIdx) {
   const barEl    = document.getElementById('phase-timer-bar');
   if (!timerEl) return;
 
-  labelEl.textContent = `Phase ${phaseIdx + 1} of ${phases.length}`;
-  nameEl.textContent = phase.label || (`Phase ${phaseIdx + 1}`);
+  labelEl.textContent = phaseCounterLabel(phaseIdx + 1, phases.length);
+  nameEl.textContent = localizePhaseLabel(phase.label) || (`Phase ${phaseIdx + 1}`);
   timerEl.classList.add('visible');
   barEl.style.transition = 'none';
   barEl.style.width = '100%';
@@ -4369,6 +4406,13 @@ function loadConfigFile(input) {
 
       scenarioConfig = parsed;
       const sc = parsed.aiScenario;
+
+      // Fasenamen altijd in de UI-taal (Engels) tonen — normaliseer de standaardfasen
+      // in de geladen config, zodat ELKE weergave (fase-timer, fase-knoppen, alarmfeed)
+      // Engels toont. Vrij ingevoerde (custom) labels blijven ongewijzigd.
+      if (Array.isArray(sc?.phases)) {
+        sc.phases.forEach(p => { if (p && p.label) p.label = localizePhaseLabel(p.label); });
+      }
 
       // UI language is always English — do NOT apply parsed.language to lang
       // Execution language from JSON is still honoured separately below
@@ -7409,7 +7453,7 @@ function handlePhaseTransition(phaseNum) {
       btn.classList.toggle('active', i === idx);
     });
     startPhaseTimerDisplay(idx);
-    const label = phases[idx]?.label || `Fase ${phaseNum}`;
+    const label = localizePhaseLabel(phases[idx]?.label) || `Fase ${phaseNum}`;
     addAlarm('inf', lang==='en'?`PHASE ${phaseNum}`:`FASE ${phaseNum}`, label, '');
     return;
   }
@@ -7439,7 +7483,7 @@ function handlePhaseTransition(phaseNum) {
   }
 
   // Alarm-notitie
-  const label = phase.label || `Fase ${phaseNum}`;
+  const label = localizePhaseLabel(phase.label) || `Fase ${phaseNum}`;
   addAlarm('inf', lang==='en'?`PHASE ${phaseNum}`:`FASE ${phaseNum}`, label, '');
 }
 // ═══════════════════════════════════════════════════════════════
