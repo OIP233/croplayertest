@@ -3518,6 +3518,8 @@ body.light *::-webkit-scrollbar-thumb { background: rgba(0,126,160,.25); }
             <span id="ack-stat-avg" style="color:var(--cyan)"></span>
             <span id="ack-stat-slow" style="color:var(--amber)"></span>
             <span id="ack-stat-unacked" style="color:var(--red)"></span>
+            <span id="ack-stat-classify" style="color:var(--cyan)"></span>
+            <span id="ack-stat-resolve" style="color:var(--green)"></span>
           </div>
         </div>
 
@@ -7439,6 +7441,29 @@ function parseAndDisplay(text) {
 // ═══════════════════════════════════════════════════════════════
 // CLAUDE API
 // ═══════════════════════════════════════════════════════════════
+// WP5 — Alarmstatus-terugkoppeling: compacte, VERBORGEN statusregel die per beurt aan
+// het system-prompt wordt gehangen, zodat de AI escalatie/de-escalatie op de werkelijke
+// alarmafhandeling baseert (niet op tijd of inschatting). Wordt niet aan de deelnemer getoond
+// en komt niet in de zichtbare berichtgeschiedenis. Leeg als er geen relevante alarmen zijn.
+function buildAlarmStatusFeedback() {
+  const ackable = alarmsFired.filter(a => a.type === 'hi' || a.type === 'med' || a.type === 'lo' || a.type === 'system');
+  if (!ackable.length) return '';
+  const now = Date.now();
+  const active = ackable.filter(a => !a.resolved);
+  const resolvedN = ackable.length - active.length;
+  const items = active.map(a => {
+    const secs = Math.round((now - a.firedMs) / 1000);
+    return a.ackedAt
+      ? `${a.tag} (${a.type.toUpperCase()}) bevestigd na ${a.ackDelaySec}s, oorzaak NOG NIET weggenomen (${secs}s actief)`
+      : `${a.tag} (${a.type.toUpperCase()}) ONBEVESTIGD, al ${secs}s actief`;
+  });
+  let block = `\n\n────────────────────\nALARM-STATUS (live meting — NIET tonen aan de deelnemer; gebruik dit om escalatie/de-escalatie te bepalen):`;
+  block += items.length ? `\nActief/onopgelost: ${items.join('; ')}` : `\nGeen actieve onopgeloste alarmen.`;
+  if (resolvedN) block += `\nOpgelost (oorzaak weggenomen): ${resolvedN}.`;
+  block += `\nLaat het verloop op deze werkelijke afhandeling rusten: tijdig en correct ingrijpen (bevestigen ÉN oorzaak wegnemen) → de-escaleren; structureel negeren of alleen bevestigen zonder de oorzaak aan te pakken → laat de situatie conform de regie verergeren (richting rood en de volgende fase).`;
+  return block;
+}
+
 async function callClaude(userMsg, isInit=false) {
   showTyping(true);
   setInput(false);
@@ -7466,7 +7491,7 @@ async function callClaude(userMsg, isInit=false) {
         : `START: Send the opening message from the Instructor (one short sentence introducing the scenario), followed by the first radio signal from the dispatcher (one sentence). Also send one DCS system message. Then wait for the participant's response. Do NOT send [FASE:n] tokens in this opening message — phase 1 is already active. ${langNote}`)
     : userMsg;
 
-  const systemPrompt = buildSystemPrompt();
+  const systemPrompt = buildSystemPrompt() + buildAlarmStatusFeedback();
   conversationHistory.push({ role:'user', content });
 
   try {
@@ -7684,7 +7709,16 @@ async function triggerDebriefing() {
   if (durLbl) durLbl.textContent = ui('debrief.duration');
 
   // Vul ACK-statistieken header in
-  const ackable = alarmsFired.filter(a => a.type === 'hi' || a.type === 'med' || a.type === 'lo');
+  const ackable = alarmsFired.filter(a => a.type === 'hi' || a.type === 'med' || a.type === 'lo' || a.type === 'system');
+
+  // Alarmbehandeling-statistieken (WP4): classificatie-accuratesse, herstel vs. alleen bevestigd, tijd-tot-herstel.
+  const classifiedSet   = ackable.filter(a => a.classifiedAs && a.klasseTrue);
+  const classifyOkN     = classifiedSet.filter(a => a.classifyCorrect === true).length;
+  const resolvedN       = ackable.filter(a => a.resolved).length;
+  const ackedNotResolvN = ackable.filter(a => a.ackedAt && !a.resolved).length;
+  const resolveTimes    = ackable.filter(a => a.resolved && typeof a.resolveDelaySec === 'number');
+  const avgResolveSec   = resolveTimes.length ? Math.round(resolveTimes.reduce((s, a) => s + a.resolveDelaySec, 0) / resolveTimes.length) : null;
+
   const ackRow  = document.getElementById('debrief-ack-row');
   if (ackable.length && ackRow) {
     const acked    = ackable.filter(a => a.ackedAt);
@@ -7717,6 +7751,21 @@ async function triggerDebriefing() {
       : (lang === 'en' ? '✓ all acknowledged' : '✓ alle bevestigd');
     unEl.style.color = unacked.length ? 'var(--red)' : 'var(--green)';
 
+    // Classificatie-accuratesse (alleen tonen als gemeten)
+    const clsEl = document.getElementById('ack-stat-classify');
+    if (classifiedSet.length) {
+      clsEl.textContent = lang === 'en'
+        ? `classify ${classifyOkN}/${classifiedSet.length} ok`
+        : `classificatie ${classifyOkN}/${classifiedSet.length} goed`;
+      clsEl.style.display = 'inline';
+    } else { clsEl.textContent = ''; clsEl.style.display = 'none'; }
+
+    // Opgelost vs. bevestigd-maar-niet-opgelost + gem. tijd-tot-herstel
+    const resEl = document.getElementById('ack-stat-resolve');
+    const avgTxt = avgResolveSec !== null ? (lang === 'en' ? ` · avg ${avgResolveSec}s` : ` · gem. ${avgResolveSec}s`) : '';
+    resEl.textContent = (lang === 'en' ? `resolved ${resolvedN}/${ackable.length}` : `opgelost ${resolvedN}/${ackable.length}`) + avgTxt;
+    resEl.style.color = resolvedN === ackable.length ? 'var(--green)' : ackedNotResolvN ? 'var(--amber)' : 'var(--green)';
+
     ackRow.style.display = 'flex';
   }
 
@@ -7730,10 +7779,25 @@ async function triggerDebriefing() {
         const ackStr = a.ackedAt
           ? `acknowledged @ ${a.ackedAt} (+${a.ackDelaySec}s, ACK-volgorde #${a.ackOrder})`
           : 'NIET acknowledged';
+        const classStr = a.classifiedAs
+          ? ` · geclassificeerd als ${a.classifiedAs.toUpperCase()}${a.klasseTrue ? (a.classifyCorrect ? ' (correct)' : ` (FOUT — referentie: ${a.klasseTrue.toUpperCase()})`) : ''}`
+          : '';
+        const resStr = a.resolved
+          ? ` · OPGELOST @ ${a.resolvedAt} (+${a.resolveDelaySec}s)`
+          : (a.ackedAt ? ' · bevestigd maar oorzaak NIET weggenomen' : '');
         const nudgeStr = a.nudgeFired ? ' [nudge gestuurd]' : '';
-        return `[${a.type.toUpperCase()}] ${a.tag}: ${a.msg} @ ${a.firedAt} — ${ackStr}${nudgeStr}`;
+        return `[${a.type.toUpperCase()}] ${a.tag}: ${a.msg} @ ${a.firedAt} — ${ackStr}${classStr}${resStr}${nudgeStr}`;
       }).join('\n')
     : lang === 'en' ? 'no alarms' : 'geen alarmen';
+
+  // Samenvattend meetblok voor de debrief-prompt (vars hierboven al berekend).
+  const alarmHandlingStats = ackable.length
+    ? `\n\nALARMBEHANDELING — METING:
+- Classificatie (proces/systeem): ${classifiedSet.length ? `${classifyOkN}/${classifiedSet.length} correct` : 'niet gemeten (classificatie-stap uit of geen referentieklasse)'}
+- Oorzaak weggenomen (opgelost): ${resolvedN}/${ackable.length}
+- Bevestigd maar oorzaak NIET weggenomen: ${ackedNotResolvN}
+- Gemiddelde tijd tot herstel: ${avgResolveSec !== null ? avgResolveSec + 's' : 'n.v.t.'}`
+    : '';
 
   // ACK-prioriteringsvolgorde analyse (alleen als meerdere alarmen tegelijk)
   const ackOrdered = alarmsFired.filter(a => a.ackOrder).sort((a, b) => a.ackOrder - b.ackOrder);
@@ -7762,7 +7826,7 @@ BERICHTEN VAN DE DEELNEMER (chronologisch):
 ${msgHistory}
 
 ALARMEN TIJDENS SCENARIO:
-${alarmDetail}${priorityAnalysis}
+${alarmDetail}${priorityAnalysis}${alarmHandlingStats}
 
 INSTRUCTIES VOOR DE EVALUATIE:
 - Wees eerlijk en direct. Een gemiddelde prestatie scoort 5-6, niet 7 of hoger.
@@ -7777,6 +7841,10 @@ INSTRUCTIES VOOR DE EVALUATIE:
 ${lang==='en' ? '- ALARM ACKNOWLEDGEMENT: the alarm data shows whether and how quickly the participant acknowledged each alarm (ACK time in seconds). Evaluate this as part of Prioritisation: <15s = fast/good, 15-45s = acceptable, >45s = slow/problematic. Unacknowledged alarms are a serious concern. Explicitly mention outliers in the feedback.' : ''}
 - ACK-VOLGORDE BIJ MEERDERE ALARMEN: als de ACK-volgorde beschikbaar is, beoordeel of de deelnemer hoog-prioriteit alarmen vóór laag-prioriteit alarmen bevestigde. Verkeerde volgorde (bijv. een LO-alarm vóór een HI-alarm) duidt op gebrekkige prioriteitstelling en moet expliciet benoemd worden.
 ${lang==='en' ? '- ACK ORDER WITH MULTIPLE ALARMS: if the ACK order is available, evaluate whether the participant acknowledged high-priority alarms before low-priority ones. Wrong order (e.g. a LO alarm before a HI alarm) indicates poor prioritisation and must be explicitly mentioned.' : ''}
+- ALARMCLASSIFICATIE (indien gemeten): de deelnemer classificeerde alarmen als PROCES of SYSTEEM. Correct onderscheiden van een procesafwijking vs. een instrument-/systeemstoring hoort bij SITUATIEBEWUSTZIJN. Benoem foute classificaties expliciet (zie "FOUT — referentie: ..." in de alarmdata).
+${lang==='en' ? '- ALARM CLASSIFICATION (if measured): the participant classified alarms as PROCESS or SYSTEM. Correctly distinguishing a process deviation from an instrument/system fault is part of SITUATIONAL AWARENESS. Explicitly name incorrect classifications (see "FOUT — referentie: ..." in the alarm data).' : ''}
+- OORZAAK WEGGENOMEN vs. ALLEEN BEVESTIGD: een alarm bevestigen is niet hetzelfde als de oorzaak wegnemen. "OPGELOST" (terug naar normaal) toont handelingsgerichtheid; "bevestigd maar oorzaak NIET weggenomen" duidt op passief gedrag. Beoordeel dit onder PRIORITEITSTELLING/handelingsgerichtheid en benoem de tijd-tot-herstel waar relevant. Een hoge ratio bevestigd-maar-niet-opgelost is een serieus aandachtspunt.
+${lang==='en' ? '- CAUSE REMOVED vs. MERELY ACKNOWLEDGED: acknowledging an alarm is not the same as removing its cause. "RESOLVED" (back to normal) shows action-orientation; "acknowledged but cause NOT removed" indicates passive behaviour. Evaluate this under PRIORITISATION/action-orientation and mention time-to-resolve where relevant. A high acknowledged-but-not-resolved ratio is a serious concern.' : ''}
 
 - COMMUNICATIE-DOELMATIGHEID: beoordeel de effectiviteit van de communicatie van de deelnemer aan de hand van de daadwerkelijke berichten. Let op:
   (a) Duidelijkheid — zijn de berichten ondubbelzinnig en direct, of vaag/meerduidig?
@@ -7793,7 +7861,7 @@ Geef je debriefing UITSLUITEND als geldig JSON-object — geen tekst erbuiten, g
 {
   "score": <getal 1-10>,
   "timeline": [
-    { "time": "<MM:SS>", "type": "<alarm-hi|alarm-med|alarm-lo|camera|decision|milestone>", "tag": "<korte tag>", "text": "<omschrijving>" }
+    { "time": "<MM:SS>", "type": "<alarm-hi|alarm-med|alarm-lo|alarm-system|camera|decision|milestone>", "tag": "<korte tag>", "text": "<omschrijving>" }
   ],
   "competencies": [
     { "name": "<naam>", "score": <1-5>, "feedback": "<concrete observatie met verwijzing naar specifiek moment — geen algemeenheden>" }
@@ -8139,7 +8207,7 @@ function renderDebrief(d, durationStr) {
 
   // Voeg ACK-events toe op basis van alarmsFired (voor alarmen die niet in Claude's tijdlijn staan)
   // en verrijk bestaande alarm-events met ACK-info
-  const ackableAlarms = alarmsFired.filter(a => a.type === 'hi' || a.type === 'med' || a.type === 'lo');
+  const ackableAlarms = alarmsFired.filter(a => a.type === 'hi' || a.type === 'med' || a.type === 'lo' || a.type === 'system');
 
   // Render tijdlijn met ACK-paren
   if (track) {
