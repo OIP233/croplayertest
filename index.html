@@ -947,6 +947,48 @@ html, body {
 }
 .alarm-row.acked b { color: var(--text); }
 
+/* Opgelost: oorzaak weggenomen, terug naar normaal. Groene markering, puls gestopt,
+   blijft zichtbaar voor de debrief. */
+.alarm-row.resolved {
+  opacity: .62;
+  filter: saturate(.5);
+  border-left-color: var(--green) !important;
+  background: rgba(62,232,122,.10) !important;
+  animation: none !important;
+  cursor: default;
+}
+.alarm-row.resolved b { color: var(--text); }
+.resolve-badge {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 13px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  background: rgba(62,232,122,.28);
+  color: var(--green);
+  border: 1px solid rgba(62,232,122,.45);
+  border-radius: 3px;
+  padding: 0 6px;
+  margin-left: 8px;
+  font-weight: 600;
+}
+
+/* Inline classificatie-keuze (proces/systeem) bij bevestigen. */
+.classify-row { display:flex; align-items:center; gap:8px; margin-top:6px; flex-wrap:wrap; }
+.classify-lbl { font-family:var(--mono); font-size:12px; color:var(--text-dim); letter-spacing:1px; text-transform:uppercase; }
+.classify-btn {
+  font-family:var(--mono); font-size:12px; letter-spacing:1px;
+  padding:3px 12px; border-radius:4px;
+  border:1px solid var(--border-hi); background:rgba(127,127,127,.14);
+  color:var(--text-bright); cursor:pointer; transition:filter .15s, border-color .15s;
+}
+.classify-btn:hover { filter:brightness(1.3); border-color:var(--cyan); }
+.classify-tag {
+  display:inline-block; font-family:var(--mono); font-size:11px; letter-spacing:1px;
+  color:var(--text-dim); border:1px solid var(--border-hi); border-radius:3px;
+  padding:0 5px; margin-left:6px; opacity:.85;
+}
+
 /* Respecteer systeemvoorkeur voor minder beweging: geen continue puls. */
 @media (prefers-reduced-motion: reduce) {
   .alarm-row.hi.ackable:not(.acked),
@@ -3727,6 +3769,7 @@ INSTRUCTEUR: [begeleidingstekst, alleen als nodig]
 ${buildRoleFormatLines(sc)}
 [DCS-ALARM] TAG | OMSCHRIJVING | PRIORITEIT: GEEL/ORANJE/ROOD | KLASSE: PROCES/SYSTEEM
    (let op: oude notatie PRIORITEIT: HOOG/MED/LAAG blijft ook werken; KLASSE is optioneel en standaard PROCES)
+[DCS-HERSTEL] TAG  ← zet dit op een aparte regel zodra de oorzaak van een eerder alarm is weggenomen (alarm terug naar normaal)
 [FASE:n]  ← zet dit op een aparte regel zodra de overgang naar fase n van toepassing is
 
 BELANGRIJK:
@@ -6810,15 +6853,24 @@ function addAlarm(type, tag, msg, extra, meta) {
   let nudgeTimeout = null;
   if (isAckable) {
     const record = { id: alarmId, tag, msg, type, firedAt, firedMs, ackedAt: null, ackDelaySec: null, ackOrder: null, nudgeFired: false,
-      prioriteit: meta?.prioriteit || null, klasse: meta?.klasse || null };
+      prioriteit: meta?.prioriteit || null, klasse: meta?.klasse || null,
+      resolved: false, resolvedAt: null, resolveDelaySec: null, resolvedBy: null,
+      classifiedAs: null, klasseTrue: null, classifyCorrect: null };
     alarmsFired.push(record);
-    d.addEventListener('click', () => acknowledgeAlarm(alarmId, d));
+    d.addEventListener('click', () => {
+      if (d.classList.contains('acked') || d.classList.contains('resolved')) return;
+      if (classifyOnAckEnabled() && !d.classList.contains('classifying')) {
+        showAlarmClassifier(alarmId, d);     // eerst proces/systeem kiezen, dan bevestigen
+      } else if (!classifyOnAckEnabled()) {
+        acknowledgeAlarm(alarmId, d);
+      }
+    });
 
     // Automatische nudge als alarm niet binnen drempelwaarde acknowledged wordt
     const nudgeSec = ACK_NUDGE_THRESHOLDS[type] || 30;
     nudgeTimeout = setTimeout(() => {
       const rec = alarmsFired.find(a => a.id === alarmId);
-      if (rec && !rec.ackedAt && clockInterval) {
+      if (rec && !rec.ackedAt && !rec.resolved && clockInterval) {
         rec.nudgeFired = true;
         const nudgeMsg = lang === 'en'
           ? `Unacknowledged alarm: ${msg}`
@@ -6843,6 +6895,44 @@ function addAlarm(type, tag, msg, extra, meta) {
   updateAlarmLed();
   updateUnackCount();
   playAlarmSound(type);
+}
+
+// Classificatie-stap (per scenario aan/uit via aiScenario.alarmClassifyStep).
+function classifyOnAckEnabled() {
+  return !!scenarioConfig?.aiScenario?.alarmClassifyStep;
+}
+
+// Toont een inline proces/systeem-keuze op de alarmrij; één klik classificeert + bevestigt.
+function showAlarmClassifier(alarmId, el) {
+  if (!el || el.querySelector('.classify-row')) return;
+  el.classList.add('classifying');
+  const small = el.querySelector('small');
+  if (small) small.innerHTML = small.innerHTML.replace(/ · <em[^>]*>(?:klik om te bevestigen|click to acknowledge)<\/em>/, '');
+  const lbl = lang === 'en' ? 'Classify:' : 'Classificeer:';
+  el.insertAdjacentHTML('beforeend',
+    `<div class="classify-row" onclick="event.stopPropagation()">
+      <span class="classify-lbl">${lbl}</span>
+      <button class="classify-btn" onclick="event.stopPropagation();classifyAndAck('${alarmId}','proces')">${lang==='en'?'PROCESS':'PROCES'}</button>
+      <button class="classify-btn" onclick="event.stopPropagation();classifyAndAck('${alarmId}','systeem')">${lang==='en'?'SYSTEM':'SYSTEEM'}</button>
+    </div>`);
+}
+
+// Legt de classificatie vast (vergelijk met referentie-klasse uit de alarmlijst) en bevestigt.
+// classifyCorrect wordt NIET in-scenario getoond — dat is debrief-materiaal (WP4).
+function classifyAndAck(alarmId, choice) {
+  const el  = document.getElementById(alarmId);
+  const rec = alarmsFired.find(a => a.id === alarmId);
+  if (rec) {
+    rec.classifiedAs    = choice;
+    rec.klasseTrue      = rec.klasse || null;
+    rec.classifyCorrect = rec.klasse ? (choice === rec.klasse) : null;
+  }
+  if (el) {
+    const cr = el.querySelector('.classify-row');
+    if (cr) cr.remove();
+    el.classList.remove('classifying');
+  }
+  acknowledgeAlarm(alarmId, el);
 }
 
 function acknowledgeAlarm(alarmId, el) {
@@ -6876,7 +6966,8 @@ function acknowledgeAlarm(alarmId, el) {
   if (titleEl) {
     const delaySec = record?.ackDelaySec ?? 0;
     const orderLabel = record?.ackOrder ? ` #${record.ackOrder}` : '';
-    const badge = `<span class="ack-badge">✓ ACK${orderLabel}</span><span class="ack-time">${ackAt} (+${delaySec}s)</span>`;
+    const classTag = record?.classifiedAs ? `<span class="classify-tag">${record.classifiedAs.toUpperCase()}</span>` : '';
+    const badge = `<span class="ack-badge">✓ ACK${orderLabel}</span>${classTag}<span class="ack-time">${ackAt} (+${delaySec}s)</span>`;
     titleEl.insertAdjacentHTML('beforeend', badge);
   }
 
@@ -6887,10 +6978,46 @@ function acknowledgeAlarm(alarmId, el) {
   updateUnackCount();
 }
 
+// [DCS-HERSTEL] TAG — de oorzaak van het alarm is weggenomen: alarm terug naar normaal.
+// Legt resolved/resolvedAt/resolveDelaySec/resolvedBy vast (meetpunt 'oorzaak weggenomen').
+// 'bevestigd maar niet opgelost' blijft detecteerbaar: ackedAt gezet, resolved=false.
+function resolveAlarm(tag, by) {
+  if (!tag) return false;
+  const norm = String(tag).trim().toLowerCase();
+  // Meest recente, nog niet opgeloste alarm met deze tag
+  const rec = [...alarmsFired].reverse().find(a =>
+    !a.resolved && a.tag && a.tag.trim().toLowerCase() === norm &&
+    (a.type === 'hi' || a.type === 'med' || a.type === 'lo' || a.type === 'system'));
+  if (!rec) return false;
+
+  rec.resolved        = true;
+  rec.resolvedAt      = getSimTimeStr();
+  rec.resolveDelaySec = Math.round((Date.now() - rec.firedMs) / 1000);
+  rec.resolvedBy      = by || 'dcs';
+
+  const el = document.getElementById(rec.id);
+  if (el) {
+    el.classList.remove('ackable');
+    el.classList.add('resolved');
+    if (el._nudgeTimeout) { clearTimeout(el._nudgeTimeout); el._nudgeTimeout = null; }
+    const small = el.querySelector('small');
+    if (small) small.innerHTML = small.innerHTML.replace(/ · <em[^>]*>(?:klik om te bevestigen|click to acknowledge)<\/em>/, '');
+    const titleEl = el.querySelector('b');
+    if (titleEl && !el.querySelector('.resolve-badge')) {
+      titleEl.insertAdjacentHTML('beforeend',
+        `<span class="resolve-badge">✓✓ NORMAL</span><span class="ack-time">${rec.resolvedAt} (+${rec.resolveDelaySec}s)</span>`);
+    }
+  }
+  playAckSound();
+  updateAlarmLed();
+  updateUnackCount();
+  return true;
+}
+
 function updateAlarmLed() {
   const led = document.getElementById('alarm-led');
   if (!led) return;
-  const unacked = alarmsFired.filter(a => a.ackedAt === null);
+  const unacked = alarmsFired.filter(a => a.ackedAt === null && !a.resolved);
   const hasHi  = unacked.some(a => a.type === 'hi');
   const hasMed = unacked.some(a => a.type === 'med' || a.type === 'system');
   const hasLo  = unacked.some(a => a.type === 'lo');
@@ -6903,15 +7030,15 @@ function updateAlarmLed() {
 function updateUnackCount() {
   const el = document.getElementById('unack-count');
   if (!el) return;
-  const n = alarmsFired.filter(a => a.ackedAt === null && (a.type === 'hi' || a.type === 'med' || a.type === 'lo' || a.type === 'system')).length;
+  const n = alarmsFired.filter(a => a.ackedAt === null && !a.resolved && (a.type === 'hi' || a.type === 'med' || a.type === 'lo' || a.type === 'system')).length;
   if (n === 0) {
     el.style.display = 'none';
   } else {
     el.style.display = 'inline';
     el.textContent = `${n} ${lang === 'en' ? 'UNACK.' : 'ONBEV.'}`;
-    el.style.borderColor = alarmsFired.some(a => !a.ackedAt && a.type === 'hi') ? 'var(--red)' : 'var(--amber)';
-    el.style.color        = alarmsFired.some(a => !a.ackedAt && a.type === 'hi') ? 'var(--red)' : 'var(--amber)';
-    el.style.background   = alarmsFired.some(a => !a.ackedAt && a.type === 'hi') ? 'var(--red-dim)' : 'var(--amber-dim)';
+    el.style.borderColor = alarmsFired.some(a => !a.ackedAt && !a.resolved && a.type === 'hi') ? 'var(--red)' : 'var(--amber)';
+    el.style.color        = alarmsFired.some(a => !a.ackedAt && !a.resolved && a.type === 'hi') ? 'var(--red)' : 'var(--amber)';
+    el.style.background   = alarmsFired.some(a => !a.ackedAt && !a.resolved && a.type === 'hi') ? 'var(--red-dim)' : 'var(--amber-dim)';
   }
 }
 
@@ -7235,6 +7362,8 @@ function parseAndDisplay(text) {
         addAlarm(a.type, a.tag, a.msg, lbl, { prioriteit: a.prioriteit, klasse: a.klasse });
         addMsg('alarm', null, `${a.tag}: ${a.msg}`);
         hadAlarm = true;
+      } else if (l.startsWith('[DCS-HERSTEL]')) {
+        resolveAlarm(l.replace(/^\[DCS-HERSTEL\]\s*:?\s*/i, '').split('|')[0].trim(), 'ai');
       } else if (/^INSTRUCTEUR:/i.test(l) || /^INSTRUCTOR:/i.test(l)) {
         const msg = l.slice(l.indexOf(':')+1).trim();
         if (msg) addMsg('instructor', ui('instructor.label'), msg);
@@ -7255,6 +7384,10 @@ function parseAndDisplay(text) {
       addAlarm(a.type, a.tag, a.msg, lbl, { prioriteit: a.prioriteit, klasse: a.klasse });
       addMsg('alarm', null, `${a.tag}: ${a.msg}`);
       hadAlarm = true;
+    }
+    // DCS-herstel: alarm terug naar normaal (oorzaak weggenomen)
+    else if (l.startsWith('[DCS-HERSTEL]')) {
+      resolveAlarm(l.replace(/^\[DCS-HERSTEL\]\s*:?\s*/i, '').split('|')[0].trim(), 'ai');
     }
     // Instructeur
     else if (/^INSTRUCTEUR:/i.test(l) || /^INSTRUCTOR:/i.test(l)) {
@@ -7278,8 +7411,8 @@ function parseAndDisplay(text) {
 
   if (hadAlarm) {
     // LED en status worden bijgehouden via addAlarm/updateAlarmLed
-    const unackedHi  = alarmsFired.some(a => !a.ackedAt && a.type === 'hi');
-    const unackedAny = alarmsFired.some(a => !a.ackedAt && (a.type === 'hi' || a.type === 'med' || a.type === 'system'));
+    const unackedHi  = alarmsFired.some(a => !a.ackedAt && !a.resolved && a.type === 'hi');
+    const unackedAny = alarmsFired.some(a => !a.ackedAt && !a.resolved && (a.type === 'hi' || a.type === 'med' || a.type === 'system'));
     setStatus(unackedHi ? 'alarm' : unackedAny ? 'alert' : 'normal');
   }
 
