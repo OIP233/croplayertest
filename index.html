@@ -3751,6 +3751,13 @@ let phaseTimerSchedule = []; // [{delay, fn}] — herplanbaar bij resume
 function buildSystemPrompt() {
   const sc = scenarioConfig?.aiScenario;
 
+  // Deelnemernaam (uit de controller) meegeven aan de AI, zodat de Instructeur de
+  // deelnemer bij naam kan aanspreken. Operationele rollen gebruiken "operator".
+  const pName = scenarioConfig?.participant?.name?.trim();
+  const participantBlock = pName
+    ? `DE DEELNEMER: de operator die jij begeleidt heet ${pName}. De Instructeur spreekt de deelnemer waar passend bij de voornaam aan; operationele radio-rollen gebruiken "operator" of de functietitel, niet de eigennaam.`
+    : '';
+
   // ── ROUTE A: JSON geladen met systemPromptExtra ────────────────
   // De controller heeft al alles samengesteld: rollen, fasen, instructies.
   // Gebruik die direct als basis en voeg alleen de live camera-context toe.
@@ -3759,7 +3766,7 @@ function buildSystemPrompt() {
 Je speelt ALLE rollen die hieronder zijn gedefinieerd tegelijk.
 
 ${getScenarioLangInstruction()}
-
+${participantBlock ? '\n' + participantBlock + '\n' : ''}
 ${sc.systemPromptExtra}
 
 ════════════════════════════════════
@@ -3788,7 +3795,7 @@ BELANGRIJK:
 Je speelt ALLE onderstaande rollen tegelijk — inclusief de INSTRUCTEUR.
 
 ${getScenarioLangInstruction()}
-
+${participantBlock ? '\n' + participantBlock + '\n' : ''}
 ════════════════════════════════════
 SYSTEEMROL: INSTRUCTEUR
 ════════════════════════════════════
@@ -4259,6 +4266,7 @@ const UI = {
     'debrief.duration': 'Duur scenario',
     'debrief.timeline': 'Tijdlijn',
     'debrief.analysis': 'Gedragsanalyse',
+    'debrief.comms': 'Communicatie-doelmatigheid',
     'debrief.learning': 'Leerpunten',
     'timer.label':      'Tijd',
     'in_control':       'In Control',
@@ -4307,6 +4315,7 @@ const UI = {
     'debrief.duration': 'Scenario duration',
     'debrief.timeline': 'Timeline',
     'debrief.analysis': 'Behaviour analysis',
+    'debrief.comms': 'Communication effectiveness',
     'debrief.learning': 'Learning points',
     'timer.label':      'Time',
     'in_control':       'In Control',
@@ -4418,7 +4427,7 @@ function applyUILang() {
   if (scoreLbl) scoreLbl.textContent = ui('debrief.score');
 
   const secTitles = document.querySelectorAll('.ds-title');
-  const secKeys = ['debrief.timeline','debrief.analysis','debrief.learning'];
+  const secKeys = ['debrief.timeline','debrief.analysis','debrief.comms','debrief.learning'];
   secTitles.forEach((el, i) => { if (secKeys[i]) el.textContent = ui(secKeys[i]); });
 
   const phP = document.querySelector('#storyline-placeholder p');
@@ -7771,7 +7780,7 @@ async function triggerDebriefing() {
 
   // Sectie-titels
   const secTitles = document.querySelectorAll('.ds-title');
-  const secKeys = ['debrief.timeline','debrief.analysis','debrief.learning'];
+  const secKeys = ['debrief.timeline','debrief.analysis','debrief.comms','debrief.learning'];
   secTitles.forEach((el, i) => { if (secKeys[i]) el.textContent = ui(secKeys[i]); });
 
   const alarmDetail = alarmsFired.length
@@ -8198,6 +8207,7 @@ function renderDebrief(d, durationStr) {
   });
 
   // ── Tijdlijn ──
+  try {
   const track = document.getElementById('timeline-track');
   if (track) track.innerHTML = '';
   if (!track) { console.warn('[OIP] timeline-track niet gevonden'); }
@@ -8219,11 +8229,12 @@ function renderDebrief(d, durationStr) {
         ev.tag?.toLowerCase().includes(a.tag?.toLowerCase())
       );
 
-      const tagCls = ev.type.includes('alarm') ? 'alarm'
-                   : ev.type === 'camera'      ? 'camera'
-                   : ev.type === 'decision'    ? 'action' : '';
+      const evType = ev.type || '';
+      const tagCls = evType.includes('alarm') ? 'alarm'
+                   : evType === 'camera'      ? 'camera'
+                   : evType === 'decision'    ? 'action' : '';
 
-      if (matchedAck && ev.type.includes('alarm')) {
+      if (matchedAck && evType.includes('alarm')) {
         // Alarm + ACK als verbonden paar
         const delaySec = matchedAck.ackDelaySec;
         const ackCls   = !matchedAck.ackedAt  ? 'miss'
@@ -8236,7 +8247,7 @@ function renderDebrief(d, durationStr) {
           <div class="tl-ack-pair" style="position:relative;margin-bottom:${matchedAck.ackedAt ? 4 : 12}px">
             ${matchedAck.ackedAt && connHeight > 0 ? `<div class="tl-ack-connector ${ackCls}" style="height:${connHeight}px"></div>` : ''}
             <div class="tl-event" style="margin-bottom:2px">
-              <div class="tl-dot ${ev.type}"></div>
+              <div class="tl-dot ${evType}"></div>
               <div class="tl-time">${ev.time || '—'}</div>
               <div class="tl-text">
                 <span class="tl-tag ${tagCls}">${ev.tag || ''}</span>
@@ -8266,7 +8277,7 @@ function renderDebrief(d, durationStr) {
         // Normaal event zonder ACK-koppeling
         track.innerHTML += `
           <div class="tl-event">
-            <div class="tl-dot ${ev.type}"></div>
+            <div class="tl-dot ${evType}"></div>
             <div class="tl-time">${ev.time || '—'}</div>
             <div class="tl-text">
               ${tagCls ? `<span class="tl-tag ${tagCls}">${ev.tag || ''}</span>` : ''}
@@ -8319,8 +8330,10 @@ function renderDebrief(d, durationStr) {
   if (!d.timeline?.length && !ackableAlarms.length && track) {
     track.innerHTML = `<div style="color:var(--text-dim);font-size:13px">${lang === 'en' ? 'No timeline data available.' : 'Geen tijdlijndata beschikbaar.'}</div>`;
   }
+  } catch(e){ console.warn('[OIP] debrief tijdlijn:', e); }
 
   // ── Competenties ──
+  try {
   const grid = document.getElementById('competency-grid');
   if (grid) grid.innerHTML = '';
   (d.competencies || []).forEach(c => {
@@ -8342,15 +8355,18 @@ function renderDebrief(d, durationStr) {
   });
   // Animeer bars na render
   setTimeout(() => {
-    grid.querySelectorAll('.comp-bar').forEach(b => {
+    grid?.querySelectorAll('.comp-bar').forEach(b => {
       b.style.width = b.dataset.pct + '%';
     });
   }, 200);
+  } catch(e){ console.warn('[OIP] debrief competenties:', e); }
 
   // ── Communicatie-doelmatigheid ──
-  renderCommunicationAssessment(d.communicationAssessment);
+  try { renderCommunicationAssessment(d.communicationAssessment); }
+  catch(e){ console.warn('[OIP] debrief comms:', e); }
 
   // ── Leerpunten ──
+  try {
   const lp = document.getElementById('learning-points');
   if (lp) lp.innerHTML = '';
   (d.learningPoints || []).forEach(p => {
@@ -8365,6 +8381,7 @@ function renderDebrief(d, durationStr) {
       </div>`;
   });
   if (!d.learningPoints?.length && lp) lp.innerHTML = '<div style="color:var(--text-dim);font-size:13px">Geen leerpunten beschikbaar.</div>';
+  } catch(e){ console.warn('[OIP] debrief leerpunten:', e); }
   } catch(e) {
     console.error('[OIP] renderDebrief fout:', e);
     const bodyEl2 = document.getElementById('debrief-body');
