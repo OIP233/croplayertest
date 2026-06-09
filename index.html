@@ -4936,6 +4936,12 @@ class InlineVoiceInput {
 
   async start() {
     if (this.state !== 'idle') return;
+    // Tussenstatus tijdens de async opstart (getUserMedia). Zonder dit blijft state 'idle'
+    // tot de opname écht loopt; laat de gebruiker de knop los in dat venster (komt voor bij
+    // de radiocheck), dan negeert stop() het en blijft de opname hangen. We onthouden een
+    // 'stop tijdens opstarten' en ronden die af zodra de opname begint.
+    this.state = 'starting';
+    this._stopRequested = false;
     try {
       // Audio-constraints geoptimaliseerd voor Whisper:
       // - sampleRate 16 kHz: matcht Whisper's interne sample-rate (geen extra resampling)
@@ -5004,6 +5010,11 @@ class InlineVoiceInput {
 
       this.recordStartTs = Date.now();
       this._setState('recording');
+      // Werd de knop al losgelaten tijdens het opstarten? Dan nu netjes stoppen.
+      if (this._stopRequested) {
+        this._stopRequested = false;
+        this.stop();
+      }
     } catch (err) {
       console.warn('[OIP voice] getUserMedia failed:', err);
       this._cleanup();
@@ -5019,6 +5030,8 @@ class InlineVoiceInput {
   }
 
   stop() {
+    // Losgelaten terwijl de opname nog opstart: markeer zodat start() direct afrondt.
+    if (this.state === 'starting') { this._stopRequested = true; return; }
     if (this.state !== 'recording') return;
     if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
       try { this.mediaRecorder.stop(); } catch (e) { console.warn('[OIP voice] stop() failed:', e); }
@@ -5026,6 +5039,7 @@ class InlineVoiceInput {
   }
 
   cancel() {
+    if (this.state === 'starting') this._stopRequested = true;
     this.chunks = [];
     if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
       try { this.mediaRecorder.stop(); } catch (e) {}
@@ -5680,7 +5694,7 @@ function runRadioCheck() {
     const onUp = e => {
       if (!downActive) return;
       downActive = false;
-      if (checkVoice.state === 'recording') checkVoice.stop();
+      checkVoice.stop();   // ook tijdens 'starting' — voorkomt vastlopende opname
     };
     micBtn.addEventListener('pointerdown', onDown);
     micBtn.addEventListener('pointerup', onUp);
@@ -5707,7 +5721,7 @@ function runRadioCheck() {
       if (spaceDown) { e.preventDefault(); e.stopPropagation(); }
       if (!spaceDown) return;
       spaceDown = false;
-      if (checkVoice.state === 'recording') checkVoice.stop();
+      checkVoice.stop();   // ook tijdens 'starting' — voorkomt vastlopende opname
     };
     document.addEventListener('keydown', onKeyDown, true);
     document.addEventListener('keyup', onKeyUp, true);
@@ -5783,8 +5797,8 @@ function runRadioCheck() {
       micBtn.removeEventListener('pointercancel', onUp);
       document.removeEventListener('keydown', onKeyDown, true);
       document.removeEventListener('keyup', onKeyUp, true);
-      // Cleanup: stop eventueel nog lopende opname
-      if (checkVoice.state === 'recording') {
+      // Cleanup: stop eventueel nog lopende (of opstartende) opname
+      if (checkVoice.state !== 'idle') {
         try { checkVoice.cancel(); } catch (_) {}
       }
       if (markDone) {
@@ -5886,12 +5900,12 @@ function onPttDown(e) {
 function onPttUp(e) {
   e.preventDefault();
   if (!voiceInput || !voiceReady) return;
-  if (voiceInput.state === 'recording') voiceInput.stop();
+  voiceInput.stop();   // stop() handelt 'starting' én 'recording' af
 }
 function onPttCancel(e) {
   // Wanneer pointer buiten de knop komt tijdens opname: gewoon stoppen en toch versturen
   // (cancel() zou de opname weggooien — niet wat de operator verwacht)
-  if (voiceInput?.state === 'recording') voiceInput.stop();
+  voiceInput?.stop();
 }
 
 function onPttKeyDown(e) {
@@ -5932,7 +5946,7 @@ function onPttKeyUp(e) {
   }
   if (!voiceSpaceDown) return;
   voiceSpaceDown = false;
-  if (voiceInput?.state === 'recording') voiceInput.stop();
+  voiceInput?.stop();   // stop() handelt 'starting' én 'recording' af
 }
 
 // Extra vangnet: tijdens PTT-opname via spatiebalk ook keypress-events blokkeren.
