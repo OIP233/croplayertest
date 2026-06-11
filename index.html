@@ -3663,6 +3663,48 @@ let lastDebriefData = null;  // Bewaard voor export
 let lang = 'en';               // UI-taal is altijd Engels
 let scenarioLang = '';         // Uitvoeringstaal AI ('' = gelijk aan lang)
 
+// ── RESET PER-RUN STATE ─────────────────────────────────────────
+// De Player is ontworpen voor één run per paginalading, maar als er toch een
+// tweede start plaatsvindt zonder verversen mag de AI de vorige run niet in
+// zijn context hebben: dat geeft anticipatie op het verloop en een debrief
+// die beide runs vermengt. Behoudt bewust: apiKey, scenarioConfig, taal- en
+// audio-instellingen. (Variabelen hieronder worden deels pas later in het
+// script gedeclareerd; deze functie wordt uitsluitend op runtime aangeroepen.)
+function resetRunState() {
+  // Lopende nudge-timeouts van oude alarmrijen opruimen vóór de lijst leeg gaat
+  alarmsFired.forEach(a => {
+    const el = document.getElementById(a.id);
+    if (el?._nudgeTimeout) { clearTimeout(el._nudgeTimeout); el._nudgeTimeout = null; }
+  });
+  conversationHistory = [];
+  scenarioPhase   = 'normal';
+  messageCount    = 0;
+  alarmsFired     = [];
+  pendingDebrief  = false;
+  lastDebriefData = null;
+  firstResponseReceived = false;
+  currentPhaseIndex = -1;
+  ackOrderCounter = 0;
+  isPaused   = false;
+  pausedAt   = 0;
+  simStartMs = 0;
+  userScrolledUp  = false;
+  pendingNewCount = 0;
+  msgQueue.length = 0;
+  msgBusy = false;
+  phaseTimers.forEach(clearTimeout);
+  phaseTimers = [];
+  phaseTimerSchedule = [];
+  if (phaseTimerInterval)    { clearInterval(phaseTimerInterval);    phaseTimerInterval = null; }
+  if (briefingTimerInterval) { clearInterval(briefingTimerInterval); briefingTimerInterval = null; }
+  briefingTimerActive = false;
+  if (clockInterval) { clearInterval(clockInterval); clockInterval = null; }
+  const feed = document.getElementById('messages');
+  if (feed) feed.innerHTML = '';
+  const alist = document.getElementById('alarm-list');
+  if (alist) alist.innerHTML = '';
+}
+
 // Returns the effective execution language (always explicitly set)
 function getEffectiveLang() {
   return scenarioLang || 'en';
@@ -4600,6 +4642,10 @@ async function startScenario() {
     }
     apiKey = manualKey;
   }
+
+  // Schone lei: een eventuele eerdere run in deze paginalading mag niet
+  // doorwerken in gesprekscontext, alarmbord of debrief.
+  resetRunState();
 
   // Uitvoeringstaal inlezen uit dropdown (overschrijft eventuele JSON-waarde)
   const execSel = document.getElementById('execlang-select');
