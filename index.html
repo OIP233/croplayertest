@@ -929,6 +929,12 @@ html, body {
 .alarm-row b   { display:block; font-weight:600; font-size:13px; color:var(--text-bright); }
 .alarm-row small { font-size: 13px; color:var(--text-dim); }
 .alarm-time { float:right; opacity:.6; font-size: 13px; }
+.alarm-row .src-badge {
+  display:inline-block; font-family:var(--mono); font-size:10px; font-weight:600;
+  letter-spacing:.5px; padding:0 5px; border-radius:3px; opacity:.95;
+  border:1px solid var(--border-hi); color:var(--text-bright);
+  background:rgba(255,255,255,.06);
+}
 
 /* Acknowledge-state */
 .alarm-row.ackable {
@@ -3773,8 +3779,8 @@ LIVE CAMERA STATUS
 FORMAT — gebruik per beurt wat relevant is:
 INSTRUCTEUR: [begeleidingstekst, alleen als nodig]
 ${buildRoleFormatLines(sc)}
-[DCS-ALARM] TAG | OMSCHRIJVING | PRIORITEIT: GEEL/ORANJE/ROOD | KLASSE: PROCES/SYSTEEM
-   (let op: oude notatie PRIORITEIT: HOOG/MED/LAAG blijft ook werken; KLASSE is optioneel en standaard PROCES)
+[DCS-ALARM] TAG | OMSCHRIJVING | PRIORITEIT: GEEL/ORANJE/ROOD | KLASSE: PROCES/SYSTEEM | BRON: <bronsysteem>
+   (let op: oude notatie PRIORITEIT: HOOG/MED/LAAG blijft ook werken; KLASSE is optioneel en standaard PROCES; BRON is optioneel en standaard DCS — bv. DCS, TMS, F&G)
 [DCS-HERSTEL] TAG  ← zet dit op een aparte regel zodra de oorzaak van een eerder alarm is weggenomen (alarm terug naar normaal)
 [FASE:n]  ← zet dit op een aparte regel zodra de overgang naar fase n van toepassing is
 
@@ -6867,15 +6873,16 @@ function addAlarm(type, tag, msg, extra, meta) {
   const firedMs = Date.now();
   const firedAt = getSimTimeStr();
 
+  const bron = meta?.bron || '';
   d.className = `alarm-row ${type}${isAckable ? ' ackable' : ''}`;
   d.id = alarmId;
   d.innerHTML = `<b>${msg} <span class="alarm-time">${firedAt}</span></b>
-    <small>${tag}${extra ? ' · ' + extra : ''}${isAckable ? ` · <em style="opacity:.6">${lang === 'en' ? 'click to acknowledge' : 'klik om te bevestigen'}</em>` : ''}</small>`;
+    <small>${bron ? `<span class="src-badge">${escapeHtml(bron)}</span> ` : ''}${tag}${extra ? ' · ' + extra : ''}${isAckable ? ` · <em style="opacity:.6">${lang === 'en' ? 'click to acknowledge' : 'klik om te bevestigen'}</em>` : ''}</small>`;
 
   let nudgeTimeout = null;
   if (isAckable) {
     const record = { id: alarmId, tag, msg, type, firedAt, firedMs, ackedAt: null, ackDelaySec: null, ackOrder: null, nudgeFired: false,
-      prioriteit: meta?.prioriteit || null, klasse: meta?.klasse || null,
+      prioriteit: meta?.prioriteit || null, klasse: meta?.klasse || null, bron: meta?.bron || null,
       resolved: false, resolvedAt: null, resolveDelaySec: null, resolvedBy: null,
       classifiedAs: null, klasseTrue: null, classifyCorrect: null };
     alarmsFired.push(record);
@@ -7334,13 +7341,16 @@ function parseDcsAlarm(l) {
   const parts = body.split('|').map(p => p.trim());
   const tag   = parts[0] || 'DCS';
   const msg   = parts[1] || l;
-  let prioStr = '', klasseStr = '';
+  let prioStr = '', klasseStr = '', bronStr = '';
   parts.slice(2).forEach(p => {
     const u = p.toLowerCase();
     if (u.includes('klasse') || u.includes('class'))         klasseStr = p;
+    else if (u.includes('bron') || u.includes('source'))     bronStr = p;
     else if (u.includes('prioriteit') || u.includes('priority')) prioStr = p;
     else if (!prioStr)                                        prioStr = p; // oud format: kaal prioriteitswoord
   });
+  // Bronsysteem (bv. DCS, TMS, F&G); ontbrekend = DCS.
+  const bron = (bronStr.replace(/^\s*(bron|source)\s*:?\s*/i, '').trim()) || 'DCS';
   const prio   = prioStr.toLowerCase();
   const klasse = klasseStr.toLowerCase();
   // genormaliseerde waarden voor het record
@@ -7355,7 +7365,7 @@ function parseDcsAlarm(l) {
   else if (prioriteit === 'rood')    type = 'hi';
   else if (prioriteit === 'oranje')  type = 'med';
   else                               type = 'lo'; // geel of onbekend
-  return { tag, msg, type, prioriteit, klasse: klasseNorm };
+  return { tag, msg, type, prioriteit, klasse: klasseNorm, bron };
 }
 
 function parseAndDisplay(text) {
@@ -7381,7 +7391,7 @@ function parseAndDisplay(text) {
       if (l.startsWith('[DCS-ALARM]') || l.startsWith('[DCS]')) {
         const a   = parseDcsAlarm(l);
         const lbl = a.klasse === 'systeem' ? 'SYSTEEM' : (a.prioriteit ? a.prioriteit.toUpperCase() : '');
-        addAlarm(a.type, a.tag, a.msg, lbl, { prioriteit: a.prioriteit, klasse: a.klasse });
+        addAlarm(a.type, a.tag, a.msg, lbl, { prioriteit: a.prioriteit, klasse: a.klasse, bron: a.bron });
         addMsg('alarm', null, `${a.tag}: ${a.msg}`);
         hadAlarm = true;
       } else if (l.startsWith('[DCS-HERSTEL]')) {
@@ -7403,7 +7413,7 @@ function parseAndDisplay(text) {
     if (l.startsWith('[DCS-ALARM]') || l.startsWith('[DCS]')) {
       const a   = parseDcsAlarm(l);
       const lbl = a.klasse === 'systeem' ? 'SYSTEEM' : (a.prioriteit ? a.prioriteit.toUpperCase() : '');
-      addAlarm(a.type, a.tag, a.msg, lbl, { prioriteit: a.prioriteit, klasse: a.klasse });
+      addAlarm(a.type, a.tag, a.msg, lbl, { prioriteit: a.prioriteit, klasse: a.klasse, bron: a.bron });
       addMsg('alarm', null, `${a.tag}: ${a.msg}`);
       hadAlarm = true;
     }
@@ -7806,7 +7816,7 @@ async function triggerDebriefing() {
           ? ` · OPGELOST @ ${a.resolvedAt} (+${a.resolveDelaySec}s)`
           : (a.ackedAt ? ' · bevestigd maar oorzaak NIET weggenomen' : '');
         const nudgeStr = a.nudgeFired ? ' [nudge gestuurd]' : '';
-        return `[${a.type.toUpperCase()}] ${a.tag}: ${a.msg} @ ${a.firedAt} — ${ackStr}${classStr}${resStr}${nudgeStr}`;
+        return `[${a.bron || 'DCS'} · ${a.type.toUpperCase()}] ${a.tag}: ${a.msg} @ ${a.firedAt} — ${ackStr}${classStr}${resStr}${nudgeStr}`;
       }).join('\n')
     : lang === 'en' ? 'no alarms' : 'geen alarmen';
 
@@ -7865,6 +7875,8 @@ ${lang==='en' ? '- ACK ORDER WITH MULTIPLE ALARMS: if the ACK order is available
 ${lang==='en' ? '- ALARM CLASSIFICATION (if measured): the participant classified alarms as PROCESS or SYSTEM. Correctly distinguishing a process deviation from an instrument/system fault is part of SITUATIONAL AWARENESS. Explicitly name incorrect classifications (see "FOUT — referentie: ..." in the alarm data).' : ''}
 - OORZAAK WEGGENOMEN vs. ALLEEN BEVESTIGD: een alarm bevestigen is niet hetzelfde als de oorzaak wegnemen. "OPGELOST" (terug naar normaal) toont handelingsgerichtheid; "bevestigd maar oorzaak NIET weggenomen" duidt op passief gedrag. Beoordeel dit onder PRIORITEITSTELLING/handelingsgerichtheid en benoem de tijd-tot-herstel waar relevant. Een hoge ratio bevestigd-maar-niet-opgelost is een serieus aandachtspunt.
 ${lang==='en' ? '- CAUSE REMOVED vs. MERELY ACKNOWLEDGED: acknowledging an alarm is not the same as removing its cause. "RESOLVED" (back to normal) shows action-orientation; "acknowledged but cause NOT removed" indicates passive behaviour. Evaluate this under PRIORITISATION/action-orientation and mention time-to-resolve where relevant. A high acknowledged-but-not-resolved ratio is a serious concern.' : ''}
+- BRONSYSTEMEN: elk alarm vermeldt het bronsysteem (bv. DCS, TMS, F&G) tussen blokhaken. Een controlekamer bewaakt meerdere systemen tegelijk; benoem of de deelnemer alarmen uit verschillende systemen even adequaat afhandelde of dat één systeem werd verwaarloosd (situatiebewustzijn over systemen heen).
+${lang==='en' ? '- SOURCE SYSTEMS: each alarm shows its source system (e.g. DCS, TMS, F&G) in brackets. A control room monitors several systems at once; note whether the participant handled alarms from different systems equally well or neglected one system (cross-system situational awareness).' : ''}
 
 - COMMUNICATIE-DOELMATIGHEID: beoordeel de effectiviteit van de communicatie van de deelnemer aan de hand van de daadwerkelijke berichten. Let op:
   (a) Duidelijkheid — zijn de berichten ondubbelzinnig en direct, of vaag/meerduidig?
