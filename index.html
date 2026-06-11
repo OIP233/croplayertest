@@ -7580,7 +7580,7 @@ async function callClaude(userMsg, isInit=false) {
         'anthropic-dangerous-direct-browser-access': 'true'
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 600,
         system: systemPrompt,
         messages: conversationHistory
@@ -8000,7 +8000,7 @@ ${(()=>{const el=getEffectiveLang();return el==='de'?'Language: German.':el==='e
         'anthropic-dangerous-direct-browser-access': 'true'
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 4096,
         messages: [{ role: 'user', content: debriefPrompt }]
       }),
