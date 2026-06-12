@@ -3828,6 +3828,8 @@ ${buildRoleFormatLines(sc)}
 
 BELANGRIJK:
 - Stuur per beurt maximaal één Instructeur-regel + één of twee radio-regels
+- Zet ELKE spreker op een eigen regel: begin de regel exact met de ROLNAAM in hoofdletters gevolgd door een dubbele punt — nooit meerdere sprekers in één doorlopende regel
+- Gebruik GEEN markdown-opmaak (geen **, geen #, geen opsommingstekens)
 - Stuur [FASE:n] ALTIJD op een volledig aparte regel, direct na de dialoogregels van die beurt — nooit midden in een zin
 - [FASE:n] is een systeemtoken dat jij als AI stuurt — het is geen dialoog en geen rolnaam
 - Wacht na elk bericht op de reactie van de deelnemer
@@ -3871,6 +3873,7 @@ Na fase 4: eindig NIET abrupt. Laat de Instructeur eerst de deelnemer aanspreken
 SPELREGELS
 ════════════════════════════════════
 - Altijd in character, nooit als AI of assistent
+- Zet ELKE spreker op een eigen regel: begin de regel exact met de ROLNAAM in hoofdletters gevolgd door een dubbele punt; gebruik GEEN markdown-opmaak
 - Stuur per beurt MAXIMAAL: één Instructeur-regel (indien nodig) + één of twee operationele radio-regels + één DCS-alarm (indien van toepassing)
 - Wacht na elk bericht op de reactie van de deelnemer — stuur nooit meerdere beurten achter elkaar
 - Vertakken op basis van beslissingen van de deelnemer
@@ -7375,7 +7378,34 @@ function buildSpeakerRegex() {
     .filter(Boolean);
   if (!configRoles.length) return /^GEEN_ROL_GECONFIGUREERD:/; // Matcht nooit
   const escaped = configRoles.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-  return new RegExp(`^(${escaped.join('|')}):`, 'i');
+  return new RegExp(`^(${escaped.join('|')})\\s*:`, 'i');
+}
+
+// Normaliseer een AI-antwoord vóór het regelsgewijs parsen. Het model houdt
+// zich niet altijd strikt aan "één spreker per regel, zonder opmaak":
+// 1) markdown strippen (vetgedrukte rolprefixen als **DISPATCH:** breken de match)
+// 2) sprekerwissels die midden in een doorlopende regel staan op een eigen
+//    regel zetten — anders wordt "INSTRUCTEUR: ... DISPATCH: ..." als één
+//    instructeursbericht weergegeven en lijkt elke afzender de Instructeur.
+function normalizeAiReply(text) {
+  const t = String(text)
+    .replace(/\*\*/g, '')
+    .replace(/^#{1,4}\s+/gm, '')
+    .replace(/^[-•]\s+/gm, '');
+  const roles = scenarioConfig?.aiScenario?.roles;
+  const names = (Array.isArray(roles) ? roles : [])
+    .map(r => r?.name?.trim()).filter(Boolean)
+    .map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const tokens = [
+    ...names.map(n => n + '\\s*:'),
+    'INSTRUCTEUR\\s*:', 'INSTRUCTOR\\s*:',
+    '\\[DCS-ALARM\\]', '\\[DCS-HERSTEL\\]', '\\[DCS\\]',
+    '\\[SCENARIO-EINDE\\]', '\\[FASE:\\d+\\]'
+  ];
+  // Alleen splitsen na zinseinde of sluithaak — een rolnaam die midden in een
+  // lopende zin genoemd wordt ("vraag aan DISPATCH of ...") blijft zo heel.
+  const rx = new RegExp('([.?!\\u2026\\]])[ \\t]+(?=(?:' + tokens.join('|') + '))', 'gi');
+  return t.replace(rx, '$1\n');
 }
 
 // Parseert een [DCS-ALARM]/[DCS] regel naar { tag, msg, type, prioriteit, klasse }.
@@ -7415,7 +7445,7 @@ function parseDcsAlarm(l) {
 }
 
 function parseAndDisplay(text) {
-  const lines    = text.split('\n').filter(l => l.trim());
+  const lines    = normalizeAiReply(text).split('\n').filter(l => l.trim());
   const speakerRx = buildSpeakerRegex();
   let hadAlarm   = false;
   const inBriefing = briefingTimerActive; // snapshot — geldig voor hele response
@@ -7442,7 +7472,7 @@ function parseAndDisplay(text) {
         hadAlarm = true;
       } else if (l.startsWith('[DCS-HERSTEL]')) {
         resolveAlarm(l.replace(/^\[DCS-HERSTEL\]\s*:?\s*/i, '').split('|')[0].trim(), 'ai');
-      } else if (/^INSTRUCTEUR:/i.test(l) || /^INSTRUCTOR:/i.test(l)) {
+      } else if (/^INSTRUCTEUR\s*:/i.test(l) || /^INSTRUCTOR\s*:/i.test(l)) {
         const msg = l.slice(l.indexOf(':')+1).trim();
         if (msg) addMsg('instructor', ui('instructor.label'), msg);
       } else if (!l.startsWith('[SCENARIO-EINDE]') && !l.match(/\[FASE:\d+\]/i)
@@ -7468,7 +7498,7 @@ function parseAndDisplay(text) {
       resolveAlarm(l.replace(/^\[DCS-HERSTEL\]\s*:?\s*/i, '').split('|')[0].trim(), 'ai');
     }
     // Instructeur
-    else if (/^INSTRUCTEUR:/i.test(l) || /^INSTRUCTOR:/i.test(l)) {
+    else if (/^INSTRUCTEUR\s*:/i.test(l) || /^INSTRUCTOR\s*:/i.test(l)) {
       const msg = l.slice(l.indexOf(':')+1).trim();
       if (msg) addMsg('instructor', ui('instructor.label'), msg);
     }
@@ -7479,10 +7509,21 @@ function parseAndDisplay(text) {
       const msg    = l.slice(colon+1).trim();
       if (msg) addMsg('ai', sender, msg);
     }
+    // Niet-geconfigureerde maar rol-achtige spreker (HOOFDLETTERS + dubbele
+    // punt) — het model wijkt soms af van de exacte rolnaam. Toon als radio
+    // met de genoemde afzender in plaats van de regel stil weg te gooien.
+    else if (/^[A-Z0-9ÄËÖÜÉ][A-Z0-9ÄËÖÜÉ &/_.\-]{1,24}\s*:/.test(l)) {
+      const colon  = l.indexOf(':');
+      const sender = l.slice(0, colon).trim();
+      const msg    = l.slice(colon+1).trim();
+      if (msg) addMsg('ai', sender, msg);
+    }
     // Overige regels — alleen als ze op een instructeur-bericht lijken
     else if (!l.startsWith('[SCENARIO-EINDE]') && !l.match(/\[FASE:\d+\]/i) && l.length > 10) {
       if (/[.?!]$/.test(l) && l.length > 25 && !l.includes(':')) {
         addMsg('instructor', ui('instructor.label'), l);
+      } else {
+        console.warn('[OIP parse] regel niet herkend (genegeerd):', l);
       }
     }
   }
